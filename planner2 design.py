@@ -36,7 +36,7 @@ d_day_display = f"D-{d_day}" if d_day > 0 else "D-Day" if d_day == 0 else f"D+{a
 header_html = f"""
 <div style="border-bottom: 2px solid #e0e0e0; padding-bottom: 10px; margin-bottom: 30px; display: flex; justify-content: space-between; align-items: flex-end;">
     <div>
-        <div style="font-size: 14px; color: #777; font-family: 'Gothic A1', sans-serif; letter-spacing: 1px;">Believe in myself.</div>
+        <div style="font-size: 14px; color: #777; font-family: 'Gothic A1', sans-serif; letter-spacing: 1px;">Believe myself.</div>
         <div style="font-size: 42px; font-weight: 800; font-family: 'Courier New', monospace; color: #222;">{date_str}</div>
     </div>
     <div style="font-size: 48px; font-weight: 900; color: #ff4b4b; font-family: 'Courier New', monospace;">{d_day_display}</div>
