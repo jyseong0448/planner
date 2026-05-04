@@ -22,11 +22,23 @@ def save_data(df):
 # 페이지 설정
 st.set_page_config(page_title="감성 기말고사 플래너", layout="wide")
 
+# --- 💡 체크박스 및 전역 폰트 스타일 변경 (CSS 주입) ---
+st.markdown("""
+<style>
+/* 체크박스(과제 내용) 글씨체 변경: 날짜와 동일하게, 굵기는 얇게 */
+.stCheckbox label p {
+    font-family: 'Courier New', monospace !important;
+    font-weight: 400 !important;
+    font-size: 16px !important;
+    color: #222 !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 if 'df' not in st.session_state:
     st.session_state.df = load_data()
 
-# --- 💡 [핵심 업데이트 1] 한국 표준시(KST) 고정 ---
-# 배포된 서버의 시간대와 무관하게 항상 UTC+9 시간으로 계산합니다.
+# --- 한국 표준시(KST) 고정 ---
 KST = timezone(timedelta(hours=9))
 today = datetime.now(KST)
 today_date = today.date()
@@ -63,7 +75,7 @@ with st.sidebar:
             save_data(st.session_state.df)
             st.rerun()
 
-# --- 💡 [핵심 업데이트 2] 메인 화면 로직: 밀린 일 이월 ---
+# --- 메인 화면 로직: 밀린 일 이월 ---
 todays_tasks = []
 
 for idx, row in st.session_state.df.iterrows():
@@ -74,10 +86,8 @@ for idx, row in st.session_state.df.iterrows():
         target_date = start_date + timedelta(days=interval)
         interval_str = str(interval)
         
-        # 오늘 날짜와 '같거나 이전인' 과제 중 완료되지 않은 항목을 모두 불러옵니다.
         if target_date <= today_date and interval_str not in completed_list:
             
-            # 밀린 과제인지 오늘 과제인지 구분하여 라벨링
             if target_date < today_date:
                 days_late = (today_date - target_date).days
                 label = f"<span style='color:#ff4b4b;'>⚠️ {days_late}일 지연</span> ({'최초' if interval == 0 else str(interval) + '일차'})"
@@ -108,15 +118,15 @@ with col1:
             tasks_by_subject.setdefault(task['subject'], []).append(task)
             
         for subject, tasks in tasks_by_subject.items():
-            st.markdown(f"<h4 style='color: #444; border-left: 4px solid #aaa; padding-left: 10px; margin-top: 20px;'>{subject}</h4>", unsafe_allow_html=True)
+            # 💡 과목명(카테고리) 글씨체도 통일
+            st.markdown(f"<h4 style='font-family: \"Courier New\", monospace; color: #444; border-left: 4px solid #aaa; padding-left: 10px; margin-top: 20px;'>{subject}</h4>", unsafe_allow_html=True)
             
             for task in tasks:
-                # 라벨에 HTML(빨간색 경고 표시)이 포함되어 있으므로 markdown으로 처리
                 is_done = st.checkbox(f"✔️ {task['topic']}", key=f"task_{task['id']}_{task['interval']}")
                 
-                # 체크박스 옆에 이월된 날짜 등의 정보를 나란히 표시
-                st.markdown(f"<div style='margin-top: -30px; margin-left: 30px; font-size: 14px; color: #666;'>{task['label']}</div>", unsafe_allow_html=True)
-                st.write("") # 간격 조절
+                # 💡 라벨(이월 표시, 회차) 글씨체도 통일
+                st.markdown(f"<div style='font-family: \"Courier New\", monospace; margin-top: -30px; margin-left: 30px; font-size: 14px; color: #666;'>{task['label']}</div>", unsafe_allow_html=True)
+                st.write("") 
                 
                 if is_done:
                     done_count += 1
@@ -145,7 +155,7 @@ with col2:
     
     fig.update_layout(showlegend=False, margin=dict(t=0, b=0, l=0, r=0), 
                       paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                      annotations=[dict(text=f"{int((done_count/total_count)*100)}%", x=0.5, y=0.5, font_size=30, showarrow=False)])
+                      annotations=[dict(text=f"{int((done_count/total_count)*100)}%", x=0.5, y=0.5, font_size=30, showarrow=False, font=dict(family='Courier New, monospace', color='#444'))])
     st.plotly_chart(fig, use_container_width=True)
 
 # --- 하단 관리 메뉴 ---
