@@ -1,10 +1,10 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import os
 
-# --- 설정 및 데이터 로드 (V2 로직) ---
+# --- 설정 및 데이터 로드 ---
 DB_FILE = 'study_data.csv'
 REVIEW_INTERVALS = [0, 1, 3, 7, 15]
 
@@ -25,14 +25,18 @@ st.set_page_config(page_title="감성 기말고사 플래너", layout="wide")
 if 'df' not in st.session_state:
     st.session_state.df = load_data()
 
-# --- 상단 다이어리 헤더 UI (사진 감성 반영) ---
-today = datetime.now()
+# --- 💡 [핵심 업데이트 1] 한국 표준시(KST) 고정 ---
+# 배포된 서버의 시간대와 무관하게 항상 UTC+9 시간으로 계산합니다.
+KST = timezone(timedelta(hours=9))
+today = datetime.now(KST)
+today_date = today.date()
+
+# --- 상단 다이어리 헤더 UI ---
 date_str = today.strftime("%Y.%m.%d %a").upper()
 exam_date = datetime(2026, 7, 1).date()
-d_day = (exam_date - today.date()).days
+d_day = (exam_date - today_date).days
 d_day_display = f"D-{d_day}" if d_day > 0 else "D-Day" if d_day == 0 else f"D+{abs(d_day)}"
 
-# HTML/CSS를 활용한 감성 헤더 디자인
 header_html = f"""
 <div style="border-bottom: 2px solid #e0e0e0; padding-bottom: 10px; margin-bottom: 30px; display: flex; justify-content: space-between; align-items: flex-end;">
     <div>
@@ -50,7 +54,7 @@ with st.sidebar:
     with st.form("add_form", clear_on_submit=True):
         sub = st.text_input("과목명 (예: 물리학 II)")
         top = st.text_input("학습 내용")
-        date = st.date_input("학습 시작일", today.date())
+        date = st.date_input("학습 시작일", today_date)
         submitted = st.form_submit_button("추가하기")
         
         if submitted and sub and top:
@@ -59,9 +63,8 @@ with st.sidebar:
             save_data(st.session_state.df)
             st.rerun()
 
-# --- 메인 화면 로직: 오늘 할 일 추출 ---
+# --- 💡 [핵심 업데이트 2] 메인 화면 로직: 밀린 일 이월 ---
 todays_tasks = []
-today_date = today.date()
 
 for idx, row in st.session_state.df.iterrows():
     start_date = row['start_date']
@@ -71,8 +74,16 @@ for idx, row in st.session_state.df.iterrows():
         target_date = start_date + timedelta(days=interval)
         interval_str = str(interval)
         
-        if target_date == today_date and interval_str not in completed_list:
-            label = "최초" if interval == 0 else f"{interval}일차"
+        # 오늘 날짜와 '같거나 이전인' 과제 중 완료되지 않은 항목을 모두 불러옵니다.
+        if target_date <= today_date and interval_str not in completed_list:
+            
+            # 밀린 과제인지 오늘 과제인지 구분하여 라벨링
+            if target_date < today_date:
+                days_late = (today_date - target_date).days
+                label = f"<span style='color:#ff4b4b;'>⚠️ {days_late}일 지연</span> ({'최초' if interval == 0 else str(interval) + '일차'})"
+            else:
+                label = "최초" if interval == 0 else f"{interval}일차"
+                
             todays_tasks.append({
                 'id': idx,
                 'subject': row['subject'],
@@ -81,18 +92,17 @@ for idx, row in st.session_state.df.iterrows():
                 'label': label
             })
 
-# --- 레이아웃 구성: 좌측(과목별 리스트) / 우측(그래프) ---
+# --- 레이아웃 구성 ---
 col1, col2 = st.columns([1.2, 0.8])
 
 with col1:
     if not todays_tasks:
-        st.write("🎉 오늘은 예정된 일정이 없습니다. 수고하셨어요!")
-        done_count = 1; total_count = 1 # 그래프 에러 방지
+        st.write("🎉 오늘은 예정되거나 밀린 일정이 없습니다. 수고하셨어요!")
+        done_count = 1; total_count = 1
     else:
         done_count = 0
         total_count = len(todays_tasks)
         
-        # 할 일을 과목별로 그룹화 (사진 속 플래너처럼 보이도록)
         tasks_by_subject = {}
         for task in todays_tasks:
             tasks_by_subject.setdefault(task['subject'], []).append(task)
@@ -101,8 +111,12 @@ with col1:
             st.markdown(f"<h4 style='color: #444; border-left: 4px solid #aaa; padding-left: 10px; margin-top: 20px;'>{subject}</h4>", unsafe_allow_html=True)
             
             for task in tasks:
-                # 체크박스와 내용 표시
-                is_done = st.checkbox(f"✔️ {task['topic']} ({task['label']})", key=f"task_{task['id']}_{task['interval']}")
+                # 라벨에 HTML(빨간색 경고 표시)이 포함되어 있으므로 markdown으로 처리
+                is_done = st.checkbox(f"✔️ {task['topic']}", key=f"task_{task['id']}_{task['interval']}")
+                
+                # 체크박스 옆에 이월된 날짜 등의 정보를 나란히 표시
+                st.markdown(f"<div style='margin-top: -30px; margin-left: 30px; font-size: 14px; color: #666;'>{task['label']}</div>", unsafe_allow_html=True)
+                st.write("") # 간격 조절
                 
                 if is_done:
                     done_count += 1
@@ -121,12 +135,10 @@ with col1:
                         save_data(st.session_state.df)
 
 with col2:
-    # 우측은 다이어리의 빈 공간이나 통계 느낌으로 원 그래프 배치
     st.markdown("<div style='margin-top: 40px;'></div>", unsafe_allow_html=True)
     not_done_count = total_count - done_count
     chart_data = pd.DataFrame({'상태': ['완료', '미완료'], '개수': [done_count, not_done_count]})
     
-    # 그래프 색상을 감성적인 파스텔톤으로 변경
     fig = px.pie(chart_data, values='개수', names='상태', 
                  color='상태', color_discrete_map={'완료':'#8BC34A', '미완료':'#EEEEEE'},
                  hole=0.6)
