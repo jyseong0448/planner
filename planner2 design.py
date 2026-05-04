@@ -14,17 +14,17 @@ def load_data():
         df['start_date'] = pd.to_datetime(df['start_date']).dt.date
         df['completed_intervals'] = df['completed_intervals'].astype(str).replace('nan', '')
         
-        # 이전 데이터 호환: 최초 완료일 추가
         if 'initial_completion_date' not in df.columns:
-            df['initial_completion_date'] = pd.NaT
+            df['initial_completion_date'] = None
             mask = df['completed_intervals'].str.contains('0')
             df.loc[mask, 'initial_completion_date'] = pd.to_datetime(df.loc[mask, 'start_date']).dt.date
-        df['initial_completion_date'] = pd.to_datetime(df['initial_completion_date']).dt.date
-        
-        # 💡 [핵심 업데이트] 오늘 완료했는지를 기억하기 위한 컬럼 추가
+            
         if 'last_completed_date' not in df.columns:
-            df['last_completed_date'] = pd.NaT
-        df['last_completed_date'] = pd.to_datetime(df['last_completed_date']).dt.date
+            df['last_completed_date'] = None
+            
+        # 💡 [버그 해결] Pandas가 데이터 타입을 강제하여 튕기지 않도록, 명시적으로 object 타입으로 유연하게 만들어줍니다.
+        df['initial_completion_date'] = pd.to_datetime(df['initial_completion_date']).dt.date.astype('object')
+        df['last_completed_date'] = pd.to_datetime(df['last_completed_date']).dt.date.astype('object')
             
         return df
     return pd.DataFrame(columns=['subject', 'topic', 'start_date', 'initial_completion_date', 'last_completed_date', 'completed_intervals'])
@@ -96,7 +96,7 @@ for idx, row in st.session_state.df.iterrows():
     start_date = row['start_date']
     completed_list = str(row['completed_intervals']).split(',') if pd.notna(row['completed_intervals']) and row['completed_intervals'] != '' else []
     
-    # 💡 1. 오늘 이미 완료한 항목 추가 (리스트에 취소선으로 표시하기 위함)
+    # 1. 오늘 이미 완료한 항목
     last_comp_date = pd.to_datetime(row['last_completed_date']).date() if pd.notna(row['last_completed_date']) else None
     if last_comp_date == today_date and len(completed_list) > 0:
         just_completed_interval = completed_list[-1]
@@ -107,10 +107,10 @@ for idx, row in st.session_state.df.iterrows():
             'topic': row['topic'],
             'interval': just_completed_interval,
             'label': label,
-            'status': 'complete' # 완료 상태 마킹
+            'status': 'complete' 
         })
 
-    # 💡 2. 아직 안 한 미완료 항목 추가 (다음 복습 단계)
+    # 2. 미완료 항목 (다음 복습 단계)
     next_interval = None
     for interval in REVIEW_INTERVALS:
         if str(interval) not in completed_list:
@@ -137,7 +137,7 @@ for idx, row in st.session_state.df.iterrows():
                 'topic': row['topic'],
                 'interval': str(next_interval),
                 'label': label,
-                'status': 'incomplete' # 미완료 상태 마킹
+                'status': 'incomplete'
             })
 
 # --- 레이아웃 구성 ---
@@ -148,7 +148,6 @@ with col1:
         st.write("🎉 오늘은 예정되거나 밀린 일정이 없습니다. 수고하셨어요!")
         done_count = 1; total_count = 1
     else:
-        # 상태에 따라 카운트 계산
         total_count = len(todays_tasks)
         done_count = sum(1 for task in todays_tasks if task['status'] == 'complete')
         
@@ -161,7 +160,6 @@ with col1:
             
             for task in tasks:
                 if task['status'] == 'incomplete':
-                    # 미완료 과제는 체크박스로 표시
                     is_done = st.checkbox(f"{task['topic']}", key=f"task_{task['id']}_{task['interval']}")
                     st.markdown(f"<div style='font-family: \"Jua\", sans-serif; margin-top: -30px; margin-left: 30px; font-size: 15px; color: #666;'>{task['label']}</div>", unsafe_allow_html=True)
                     st.write("") 
@@ -171,16 +169,16 @@ with col1:
                         current_completed = str(st.session_state.df.at[idx, 'completed_intervals'])
                         new_val = task['interval'] if current_completed in ('', 'nan') else f"{current_completed},{task['interval']}".strip(',')
                         
-                        st.session_state.df.at[idx, 'completed_intervals'] = new_val
-                        st.session_state.df.at[idx, 'last_completed_date'] = today_date # 💡 완료한 날짜를 '오늘'로 기록!
+                        # 💡 [버그 해결] .at 대신 .loc를 사용하여 안전하게 값을 덮어씌웁니다.
+                        st.session_state.df.loc[idx, 'completed_intervals'] = new_val
+                        st.session_state.df.loc[idx, 'last_completed_date'] = today_date
                         
                         if task['interval'] == '0':
-                            st.session_state.df.at[idx, 'initial_completion_date'] = today_date
+                            st.session_state.df.loc[idx, 'initial_completion_date'] = today_date
                             
                         save_data(st.session_state.df)
                         st.rerun()
                 else:
-                    # 💡 완료된 과제는 취소선과 함께 흐리게 표시 (다이어리 감성)
                     st.markdown(f"<div style='font-family: \"Jua\", sans-serif; font-size: 18px; color: #bbb;'><del>✅ {task['topic']}</del></div>", unsafe_allow_html=True)
                     st.markdown(f"<div style='font-family: \"Jua\", sans-serif; margin-top: -5px; margin-left: 30px; font-size: 15px; color: #bbb;'>{task['label']} 완료! 🎉</div>", unsafe_allow_html=True)
                     st.write("")
