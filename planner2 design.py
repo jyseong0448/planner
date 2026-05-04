@@ -13,14 +13,13 @@ def load_data():
         df = pd.read_csv(DB_FILE)
         df['start_date'] = pd.to_datetime(df['start_date']).dt.date
         
-        # 💡 [버그 픽스] CSV에서 소수점이 붙어서(0.0) 불러와지는 현상을 방지하는 청소 함수
+        # 0.0 버그 방지 청소 함수
         def clean_intervals(val):
             if pd.isna(val) or str(val).lower() == 'nan' or str(val).strip() == '':
                 return ''
             cleaned = []
             for x in str(val).split(','):
                 try:
-                    # 0.0 -> float(0.0) -> int(0) -> str('0') 로 깔끔하게 변환
                     cleaned.append(str(int(float(x.strip()))))
                 except ValueError:
                     pass
@@ -65,15 +64,47 @@ st.markdown("""
 if 'df' not in st.session_state:
     st.session_state.df = load_data()
 
-# --- 한국 표준시(KST) 고정 ---
+# --- 💡 [타임머신 업데이트] 기준 날짜 설정 ---
 KST = timezone(timedelta(hours=9))
-today = datetime.now(KST)
-today_date = today.date()
+real_today = datetime.now(KST).date()
 
-# --- 상단 다이어리 헤더 UI ---
-date_str = today.strftime("%Y.%m.%d %a").upper()
+# 사용자가 달력에서 날짜를 바꾸면 기억하도록 세션 상태 사용
+if 'view_date' not in st.session_state:
+    st.session_state.view_date = real_today
+
+# '오늘로 돌아오기' 버튼을 위한 함수
+def set_today():
+    st.session_state.view_date = real_today
+
+# 현재 조회 중인 날짜
+view_date = st.session_state.view_date
+
+# --- 사이드바: 타임머신 및 추가 ---
+with st.sidebar:
+    st.header("🗓️ 타임머신 (날짜 이동)")
+    # 사용자가 날짜를 선택하면 view_date가 자동으로 바뀝니다.
+    st.date_input("조회할 날짜를 선택하세요", key='view_date')
+    st.button("🌟 오늘로 돌아오기", on_click=set_today)
+    st.divider()
+
+    st.header("📝 새 계획 추가")
+    with st.form("add_form", clear_on_submit=True):
+        sub = st.text_input("과목명 (예: 물리학 II)")
+        top = st.text_input("학습 내용")
+        # 💡 시작일 기본값도 '현재 조회 중인 날짜'로 센스있게 변경
+        date = st.date_input("학습 시작일", view_date)
+        submitted = st.form_submit_button("추가하기")
+        
+        if submitted and sub and top:
+            new_data = {'subject': sub, 'topic': top, 'start_date': date, 'initial_completion_date': None, 'last_completed_date': None, 'completed_intervals': ""}
+            st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame([new_data])], ignore_index=True)
+            save_data(st.session_state.df)
+            st.rerun()
+
+# --- 상단 다이어리 헤더 UI (조회 날짜 기준) ---
+date_str = view_date.strftime("%Y.%m.%d %a").upper()
 exam_date = datetime(2026, 7, 1).date()
-d_day = (exam_date - today_date).days
+d_day = (exam_date - view_date).days # D-Day도 조회하는 날짜 기준으로 변경
 d_day_display = f"D-{d_day}" if d_day > 0 else "D-Day" if d_day == 0 else f"D+{abs(d_day)}"
 
 header_html = f"""
@@ -87,31 +118,16 @@ header_html = f"""
 """
 st.markdown(header_html, unsafe_allow_html=True)
 
-# --- 사이드바: 새로운 학습 추가 ---
-with st.sidebar:
-    st.header("📝 새 계획 추가")
-    with st.form("add_form", clear_on_submit=True):
-        sub = st.text_input("과목명 (예: 물리학 II)")
-        top = st.text_input("학습 내용")
-        date = st.date_input("학습 시작일", today_date)
-        submitted = st.form_submit_button("추가하기")
-        
-        if submitted and sub and top:
-            new_data = {'subject': sub, 'topic': top, 'start_date': date, 'initial_completion_date': None, 'last_completed_date': None, 'completed_intervals': ""}
-            st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame([new_data])], ignore_index=True)
-            save_data(st.session_state.df)
-            st.rerun()
-
-# --- 메인 화면 로직: 할 일 목록 생성 ---
+# --- 메인 화면 로직: 할 일 목록 생성 (view_date 기준) ---
 todays_tasks = []
 
 for idx, row in st.session_state.df.iterrows():
     start_date = row['start_date']
     completed_list = str(row['completed_intervals']).split(',') if pd.notna(row['completed_intervals']) and row['completed_intervals'] != '' else []
     
-    # 1. 오늘 이미 완료한 항목
+    # 1. '조회 중인 날짜(view_date)'에 완료된 항목
     last_comp_date = pd.to_datetime(row['last_completed_date']).date() if pd.notna(row['last_completed_date']) else None
-    if last_comp_date == today_date and len(completed_list) > 0:
+    if last_comp_date == view_date and len(completed_list) > 0:
         just_completed_interval = completed_list[-1]
         label = "최초" if just_completed_interval == '0' else f"{just_completed_interval}일차"
         todays_tasks.append({
@@ -137,9 +153,10 @@ for idx, row in st.session_state.df.iterrows():
             base_date = row['initial_completion_date'] if pd.notna(row['initial_completion_date']) else start_date
             target_date = base_date + timedelta(days=next_interval)
             
-        if target_date <= today_date:
-            if target_date < today_date:
-                days_late = (today_date - target_date).days
+        # 💡 조건검사도 조회 중인 날짜(view_date)를 기준으로!
+        if target_date <= view_date:
+            if target_date < view_date:
+                days_late = (view_date - target_date).days
                 label = f"<span style='color:#ff4b4b;'>⚠️ {days_late}일 지연</span> ({'최초' if next_interval == 0 else str(next_interval) + '일차'})"
             else:
                 label = "최초" if next_interval == 0 else f"{next_interval}일차"
@@ -158,7 +175,12 @@ col1, col2 = st.columns([1.2, 0.8])
 
 with col1:
     if not todays_tasks:
-        st.write("🎉 오늘은 예정되거나 밀린 일정이 없습니다. 수고하셨어요!")
+        if view_date < real_today:
+            st.write("🎉 이 날은 예정되거나 밀린 일정이 없었습니다!")
+        elif view_date > real_today:
+            st.write("☕ 아직 이 날에 예정된 스케줄이 없습니다.")
+        else:
+            st.write("🎉 오늘은 예정되거나 밀린 일정이 없습니다. 수고하셨어요!")
         done_count = 1; total_count = 1
     else:
         total_count = len(todays_tasks)
@@ -183,10 +205,12 @@ with col1:
                         new_val = task['interval'] if current_completed in ('', 'nan') else f"{current_completed},{task['interval']}".strip(',')
                         
                         st.session_state.df.loc[idx, 'completed_intervals'] = new_val
-                        st.session_state.df.loc[idx, 'last_completed_date'] = today_date
+                        
+                        # 💡 체크하는 순간의 기록 날짜도 '조회 중인 날짜'로 들어갑니다!
+                        st.session_state.df.loc[idx, 'last_completed_date'] = view_date
                         
                         if task['interval'] == '0':
-                            st.session_state.df.loc[idx, 'initial_completion_date'] = today_date
+                            st.session_state.df.loc[idx, 'initial_completion_date'] = view_date
                             
                         save_data(st.session_state.df)
                         st.rerun()
