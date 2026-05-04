@@ -14,16 +14,20 @@ def load_data():
         df['start_date'] = pd.to_datetime(df['start_date']).dt.date
         df['completed_intervals'] = df['completed_intervals'].astype(str).replace('nan', '')
         
-        # 💡 [업데이트] 과거 데이터 호환성: 완료일 컬럼이 없으면 새로 만들고, 
-        # 이미 0(최초)을 완료한 기록이 있다면 시작일을 완료일로 임시 지정합니다.
+        # 이전 데이터 호환: 최초 완료일 추가
         if 'initial_completion_date' not in df.columns:
             df['initial_completion_date'] = pd.NaT
             mask = df['completed_intervals'].str.contains('0')
             df.loc[mask, 'initial_completion_date'] = pd.to_datetime(df.loc[mask, 'start_date']).dt.date
-            
         df['initial_completion_date'] = pd.to_datetime(df['initial_completion_date']).dt.date
+        
+        # 💡 [핵심 업데이트] 오늘 완료했는지를 기억하기 위한 컬럼 추가
+        if 'last_completed_date' not in df.columns:
+            df['last_completed_date'] = pd.NaT
+        df['last_completed_date'] = pd.to_datetime(df['last_completed_date']).dt.date
+            
         return df
-    return pd.DataFrame(columns=['subject', 'topic', 'start_date', 'initial_completion_date', 'completed_intervals'])
+    return pd.DataFrame(columns=['subject', 'topic', 'start_date', 'initial_completion_date', 'last_completed_date', 'completed_intervals'])
 
 def save_data(df):
     df.to_csv(DB_FILE, index=False)
@@ -80,36 +84,46 @@ with st.sidebar:
         submitted = st.form_submit_button("추가하기")
         
         if submitted and sub and top:
-            # 💡 [업데이트] 새로 추가할 때 완료일(initial_completion_date)은 None으로 비워둠
-            new_data = {'subject': sub, 'topic': top, 'start_date': date, 'initial_completion_date': None, 'completed_intervals': ""}
+            new_data = {'subject': sub, 'topic': top, 'start_date': date, 'initial_completion_date': None, 'last_completed_date': None, 'completed_intervals': ""}
             st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame([new_data])], ignore_index=True)
             save_data(st.session_state.df)
             st.rerun()
 
-# --- 💡 [핵심 업데이트] 메인 화면 로직: 중복 방지 및 완료일 기준 스케줄링 ---
+# --- 메인 화면 로직: 할 일 목록 생성 ---
 todays_tasks = []
 
 for idx, row in st.session_state.df.iterrows():
     start_date = row['start_date']
     completed_list = str(row['completed_intervals']).split(',') if pd.notna(row['completed_intervals']) and row['completed_intervals'] != '' else []
     
-    # 해당 과제에서 '가장 먼저 해야 할(아직 완료 안 된) 단 하나의 복습 주기'만 찾습니다.
+    # 💡 1. 오늘 이미 완료한 항목 추가 (리스트에 취소선으로 표시하기 위함)
+    last_comp_date = pd.to_datetime(row['last_completed_date']).date() if pd.notna(row['last_completed_date']) else None
+    if last_comp_date == today_date and len(completed_list) > 0:
+        just_completed_interval = completed_list[-1]
+        label = "최초" if just_completed_interval == '0' else f"{just_completed_interval}일차"
+        todays_tasks.append({
+            'id': idx,
+            'subject': row['subject'],
+            'topic': row['topic'],
+            'interval': just_completed_interval,
+            'label': label,
+            'status': 'complete' # 완료 상태 마킹
+        })
+
+    # 💡 2. 아직 안 한 미완료 항목 추가 (다음 복습 단계)
     next_interval = None
     for interval in REVIEW_INTERVALS:
         if str(interval) not in completed_list:
             next_interval = interval
-            break # 찾으면 즉시 멈춤 (중복 노출 방지)
+            break 
             
     if next_interval is not None:
-        # 최초 학습(0)이면 '시작일' 기준, 그 외 복습(1, 3, 7, 15)이면 '최초 완료일' 기준
         if next_interval == 0:
             target_date = start_date
         else:
-            # 만약 예외적으로 완료일이 누락되었다면 시작일로 대체하여 계산
             base_date = row['initial_completion_date'] if pd.notna(row['initial_completion_date']) else start_date
             target_date = base_date + timedelta(days=next_interval)
             
-        # 목표일이 오늘이거나 과거(밀린 과제)일 경우에만 리스트에 추가
         if target_date <= today_date:
             if target_date < today_date:
                 days_late = (today_date - target_date).days
@@ -122,7 +136,8 @@ for idx, row in st.session_state.df.iterrows():
                 'subject': row['subject'],
                 'topic': row['topic'],
                 'interval': str(next_interval),
-                'label': label
+                'label': label,
+                'status': 'incomplete' # 미완료 상태 마킹
             })
 
 # --- 레이아웃 구성 ---
@@ -133,8 +148,9 @@ with col1:
         st.write("🎉 오늘은 예정되거나 밀린 일정이 없습니다. 수고하셨어요!")
         done_count = 1; total_count = 1
     else:
-        done_count = 0
+        # 상태에 따라 카운트 계산
         total_count = len(todays_tasks)
+        done_count = sum(1 for task in todays_tasks if task['status'] == 'complete')
         
         tasks_by_subject = {}
         for task in todays_tasks:
@@ -144,31 +160,30 @@ with col1:
             st.markdown(f"<h4 style='font-family: \"Jua\", sans-serif; font-weight: normal; color: #444; border-left: 4px solid #aaa; padding-left: 10px; margin-top: 20px;'>{subject}</h4>", unsafe_allow_html=True)
             
             for task in tasks:
-                is_done = st.checkbox(f"✔️ {task['topic']}", key=f"task_{task['id']}_{task['interval']}")
-                
-                st.markdown(f"<div style='font-family: \"Jua\", sans-serif; margin-top: -30px; margin-left: 30px; font-size: 15px; color: #666;'>{task['label']}</div>", unsafe_allow_html=True)
-                st.write("") 
-                
-                if is_done:
-                    done_count += 1
-                    idx = task['id']
-                    current_completed = str(st.session_state.df.at[idx, 'completed_intervals'])
+                if task['status'] == 'incomplete':
+                    # 미완료 과제는 체크박스로 표시
+                    is_done = st.checkbox(f"{task['topic']}", key=f"task_{task['id']}_{task['interval']}")
+                    st.markdown(f"<div style='font-family: \"Jua\", sans-serif; margin-top: -30px; margin-left: 30px; font-size: 15px; color: #666;'>{task['label']}</div>", unsafe_allow_html=True)
+                    st.write("") 
                     
-                    if current_completed in ('', 'nan'):
-                        new_val = task['interval']
-                    elif task['interval'] not in current_completed.split(','):
-                        new_val = f"{current_completed},{task['interval']}".strip(',')
-                    else:
-                        new_val = current_completed
-                    
-                    st.session_state.df.at[idx, 'completed_intervals'] = new_val
-                    
-                    # 💡 [핵심 업데이트] '최초(0)' 단계를 방금 완료했다면, 오늘 날짜를 '최초 완료일'로 기록합니다!
-                    if task['interval'] == '0':
-                        st.session_state.df.at[idx, 'initial_completion_date'] = today_date
+                    if is_done:
+                        idx = task['id']
+                        current_completed = str(st.session_state.df.at[idx, 'completed_intervals'])
+                        new_val = task['interval'] if current_completed in ('', 'nan') else f"{current_completed},{task['interval']}".strip(',')
                         
-                    save_data(st.session_state.df)
-                    st.rerun() # 완료 즉시 화면 새로고침하여 다음 단계를 대기 상태로 만듦
+                        st.session_state.df.at[idx, 'completed_intervals'] = new_val
+                        st.session_state.df.at[idx, 'last_completed_date'] = today_date # 💡 완료한 날짜를 '오늘'로 기록!
+                        
+                        if task['interval'] == '0':
+                            st.session_state.df.at[idx, 'initial_completion_date'] = today_date
+                            
+                        save_data(st.session_state.df)
+                        st.rerun()
+                else:
+                    # 💡 완료된 과제는 취소선과 함께 흐리게 표시 (다이어리 감성)
+                    st.markdown(f"<div style='font-family: \"Jua\", sans-serif; font-size: 18px; color: #bbb;'><del>✅ {task['topic']}</del></div>", unsafe_allow_html=True)
+                    st.markdown(f"<div style='font-family: \"Jua\", sans-serif; margin-top: -5px; margin-left: 30px; font-size: 15px; color: #bbb;'>{task['label']} 완료! 🎉</div>", unsafe_allow_html=True)
+                    st.write("")
 
 with col2:
     st.markdown("<div style='margin-top: 40px;'></div>", unsafe_allow_html=True)
@@ -187,12 +202,14 @@ with col2:
 # --- 하단 관리 메뉴 ---
 st.divider()
 with st.expander("📂 전체 데이터 관리 (수정/삭제)"):
+    st.info("💡 앗, 실수로 완료를 누르셨나요? 표의 맨 오른쪽 '완료 기록'과 '오늘 완료일' 칸의 내용을 지우고 저장하면 다시 복구됩니다.")
     edited_df = st.data_editor(st.session_state.df, num_rows="dynamic", use_container_width=True,
                                column_config={
                                    "subject": "과목", 
                                    "topic": "학습 주제", 
                                    "start_date": st.column_config.DateColumn("시작일(계획)", format="YYYY-MM-DD"),
-                                   "initial_completion_date": st.column_config.DateColumn("최초 완료일(실제)", format="YYYY-MM-DD"),
+                                   "initial_completion_date": st.column_config.DateColumn("최초 완료일", format="YYYY-MM-DD"),
+                                   "last_completed_date": st.column_config.DateColumn("오늘 완료일", format="YYYY-MM-DD"),
                                    "completed_intervals": "완료 기록"
                                })
     if st.button("수정사항 저장"):
