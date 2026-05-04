@@ -22,14 +22,17 @@ def save_data(df):
 # 페이지 설정
 st.set_page_config(page_title="감성 기말고사 플래너", layout="wide")
 
-# --- 💡 체크박스 및 전역 폰트 스타일 변경 (CSS 주입) ---
+# --- 💡 주아(Jua)체 폰트 적용 (CSS 주입) ---
 st.markdown("""
 <style>
-/* 체크박스(과제 내용) 글씨체 변경: 날짜와 동일하게, 굵기는 얇게 */
+/* 구글 웹 폰트에서 'Jua' 폰트 불러오기 */
+@import url('https://fonts.googleapis.com/css2?family=Jua&display=swap');
+
+/* 체크박스(과제 내용) 글씨체 변경: 주아체 적용 */
 .stCheckbox label p {
-    font-family: 'Courier New', monospace !important;
+    font-family: 'Jua', sans-serif !important;
     font-weight: 400 !important;
-    font-size: 16px !important;
+    font-size: 18px !important; /* 주아체 특성을 고려해 약간 크게 설정 */
     color: #222 !important;
 }
 </style>
@@ -118,14 +121,14 @@ with col1:
             tasks_by_subject.setdefault(task['subject'], []).append(task)
             
         for subject, tasks in tasks_by_subject.items():
-            # 💡 과목명(카테고리) 글씨체도 통일
-            st.markdown(f"<h4 style='font-family: \"Courier New\", monospace; color: #444; border-left: 4px solid #aaa; padding-left: 10px; margin-top: 20px;'>{subject}</h4>", unsafe_allow_html=True)
+            # 💡 과목명(카테고리) 글씨체 주아체로 통일
+            st.markdown(f"<h4 style='font-family: \"Jua\", sans-serif; font-weight: normal; color: #444; border-left: 4px solid #aaa; padding-left: 10px; margin-top: 20px;'>{subject}</h4>", unsafe_allow_html=True)
             
             for task in tasks:
                 is_done = st.checkbox(f"✔️ {task['topic']}", key=f"task_{task['id']}_{task['interval']}")
                 
-                # 💡 라벨(이월 표시, 회차) 글씨체도 통일
-                st.markdown(f"<div style='font-family: \"Courier New\", monospace; margin-top: -30px; margin-left: 30px; font-size: 14px; color: #666;'>{task['label']}</div>", unsafe_allow_html=True)
+                # 💡 라벨(이월 표시, 회차) 글씨체 주아체로 통일
+                st.markdown(f"<div style='font-family: \"Jua\", sans-serif; margin-top: -30px; margin-left: 30px; font-size: 15px; color: #666;'>{task['label']}</div>", unsafe_allow_html=True)
                 st.write("") 
                 
                 if is_done:
@@ -155,7 +158,7 @@ with col2:
     
     fig.update_layout(showlegend=False, margin=dict(t=0, b=0, l=0, r=0), 
                       paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                      annotations=[dict(text=f"{int((done_count/total_count)*100)}%", x=0.5, y=0.5, font_size=30, showarrow=False, font=dict(family='Courier New, monospace', color='#444'))])
+                      annotations=[dict(text=f"{int((done_count/total_count)*100)}%", x=0.5, y=0.5, font_size=30, showarrow=False, font=dict(family='Jua, sans-serif', color='#444'))])
     st.plotly_chart(fig, use_container_width=True)
 
 # --- 하단 관리 메뉴 ---
