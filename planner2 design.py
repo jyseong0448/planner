@@ -12,7 +12,21 @@ def load_data():
     if os.path.exists(DB_FILE):
         df = pd.read_csv(DB_FILE)
         df['start_date'] = pd.to_datetime(df['start_date']).dt.date
-        df['completed_intervals'] = df['completed_intervals'].astype(str).replace('nan', '')
+        
+        # 💡 [버그 픽스] CSV에서 소수점이 붙어서(0.0) 불러와지는 현상을 방지하는 청소 함수
+        def clean_intervals(val):
+            if pd.isna(val) or str(val).lower() == 'nan' or str(val).strip() == '':
+                return ''
+            cleaned = []
+            for x in str(val).split(','):
+                try:
+                    # 0.0 -> float(0.0) -> int(0) -> str('0') 로 깔끔하게 변환
+                    cleaned.append(str(int(float(x.strip()))))
+                except ValueError:
+                    pass
+            return ','.join(cleaned)
+            
+        df['completed_intervals'] = df['completed_intervals'].apply(clean_intervals)
         
         if 'initial_completion_date' not in df.columns:
             df['initial_completion_date'] = None
@@ -22,7 +36,6 @@ def load_data():
         if 'last_completed_date' not in df.columns:
             df['last_completed_date'] = None
             
-        # 💡 [버그 해결] Pandas가 데이터 타입을 강제하여 튕기지 않도록, 명시적으로 object 타입으로 유연하게 만들어줍니다.
         df['initial_completion_date'] = pd.to_datetime(df['initial_completion_date']).dt.date.astype('object')
         df['last_completed_date'] = pd.to_datetime(df['last_completed_date']).dt.date.astype('object')
             
@@ -169,7 +182,6 @@ with col1:
                         current_completed = str(st.session_state.df.at[idx, 'completed_intervals'])
                         new_val = task['interval'] if current_completed in ('', 'nan') else f"{current_completed},{task['interval']}".strip(',')
                         
-                        # 💡 [버그 해결] .at 대신 .loc를 사용하여 안전하게 값을 덮어씌웁니다.
                         st.session_state.df.loc[idx, 'completed_intervals'] = new_val
                         st.session_state.df.loc[idx, 'last_completed_date'] = today_date
                         
