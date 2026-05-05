@@ -27,24 +27,30 @@ def load_data():
             
         df['completed_intervals'] = df['completed_intervals'].apply(clean_intervals)
         
-        # 데이터 호환성 체크 (initial_completion_date, last_completed_date)
-        if 'initial_completion_date' not in df.columns:
-            df['initial_completion_date'] = None
-            mask = df['completed_intervals'].str.contains('0')
-            df.loc[mask, 'initial_completion_date'] = pd.to_datetime(df.loc[mask, 'start_date']).dt.date
-        if 'last_completed_date' not in df.columns:
-            df['last_completed_date'] = None
-            
-        # 💡 [업데이트] 메모(memo) 컬럼이 없으면 추가
+        # 💡 [핵심 업데이트] 과거의 모든 완료 날짜를 독립적으로 기억하는 History 컬럼
+        if 'history' not in df.columns:
+            df['history'] = ""
+            for idx, row in df.iterrows():
+                comps = [x.strip() for x in str(row.get('completed_intervals', '')).split(',') if x.strip()]
+                hist = {}
+                init_date = row.get('initial_completion_date') if 'initial_completion_date' in df.columns else pd.NaT
+                last_date = row.get('last_completed_date') if 'last_completed_date' in df.columns else pd.NaT
+                
+                for c in comps:
+                    if c == '0' and pd.notna(init_date):
+                        hist[c] = str(pd.to_datetime(init_date).date())
+                    elif c == comps[-1] and pd.notna(last_date):
+                        hist[c] = str(pd.to_datetime(last_date).date())
+                    else:
+                        hist[c] = str(row['start_date'])
+                df.at[idx, 'history'] = ",".join([f"{k}:{v}" for k,v in hist.items()])
+                
         if 'memo' not in df.columns:
             df['memo'] = ""
-            
-        df['initial_completion_date'] = pd.to_datetime(df['initial_completion_date']).dt.date.astype('object')
-        df['last_completed_date'] = pd.to_datetime(df['last_completed_date']).dt.date.astype('object')
-        df['memo'] = df['memo'].fillna("") # 빈칸 처리
+        df['memo'] = df['memo'].fillna("")
             
         return df
-    return pd.DataFrame(columns=['subject', 'topic', 'start_date', 'initial_completion_date', 'last_completed_date', 'completed_intervals', 'memo'])
+    return pd.DataFrame(columns=['subject', 'topic', 'start_date', 'completed_intervals', 'history', 'memo'])
 
 def save_data(df):
     df.to_csv(DB_FILE, index=False)
@@ -63,7 +69,6 @@ st.markdown("""
     font-size: 18px !important; 
     color: #222 !important;
 }
-/* 메모 입력창 폰트 설정 */
 div[data-baseweb="input"] input {
     font-family: 'Jua', sans-serif !important;
     font-size: 15px !important;
@@ -101,7 +106,7 @@ with st.sidebar:
         submitted = st.form_submit_button("추가하기")
         
         if submitted and sub and top:
-            new_data = {'subject': sub, 'topic': top, 'start_date': date, 'initial_completion_date': None, 'last_completed_date': None, 'completed_intervals': "", 'memo': ""}
+            new_data = {'subject': sub, 'topic': top, 'start_date': date, 'completed_intervals': "", 'history': "", 'memo': ""}
             st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame([new_data])], ignore_index=True)
             save_data(st.session_state.df)
             st.rerun()
@@ -123,33 +128,37 @@ header_html = f"""
 """
 st.markdown(header_html, unsafe_allow_html=True)
 
-# --- 메인 화면 로직: 할 일 목록 생성 ---
+# --- 메인 화면 로직: 완벽한 History 분리 ---
 todays_tasks = []
 
 for idx, row in st.session_state.df.iterrows():
     start_date = row['start_date']
-    completed_list = str(row['completed_intervals']).split(',') if pd.notna(row['completed_intervals']) and row['completed_intervals'] != '' else []
+    hist_str = str(row.get('history', ''))
     
-    # 1. '조회 중인 날짜'에 완료된 항목
-    last_comp_date = pd.to_datetime(row['last_completed_date']).date() if pd.notna(row['last_completed_date']) else None
-    if last_comp_date == view_date and len(completed_list) > 0:
-        just_completed_interval = completed_list[-1]
-        
-        if just_completed_interval == '0':
+    # 딕셔너리로 변환 {'0':'2026-05-04', '1':'2026-05-05'}
+    hist_dict = {k:v for k,v in [x.split(':') for x in hist_str.split(',') if ':' in x]}
+    
+    # 1. '조회 중인 날짜(view_date)'에 정확히 완료된 항목 찾기
+    completed_on_view = [k for k, v in hist_dict.items() if str(pd.to_datetime(v).date()) == str(view_date)]
+    
+    for comp_int in completed_on_view:
+        if comp_int == '0':
             label = f"{start_date.month}/{start_date.day} 계획 • 최초"
         else:
-            base_date = row['initial_completion_date'] if pd.notna(row['initial_completion_date']) else start_date
-            label = f"{base_date.month}/{base_date.day} 완료 • {just_completed_interval}일차"
+            base_date = pd.to_datetime(hist_dict.get('0', start_date)).date()
+            label = f"{base_date.month}/{base_date.day} 완료 • {comp_int}일차"
             
         todays_tasks.append({
-            'id': idx, 'subject': row['subject'], 'topic': row['topic'], 'interval': just_completed_interval,
+            'id': idx, 'subject': row['subject'], 'topic': row['topic'], 'interval': comp_int,
             'label': label, 'status': 'complete', 'memo': row['memo']
         })
 
-    # 2. 미완료 항목 (다음 복습 단계)
+    # 2. 다음으로 해야 할 미완료 항목 계산
+    completed_before_or_on_view = [k for k, v in hist_dict.items() if pd.to_datetime(v).date() <= view_date]
     next_interval = None
+    
     for interval in REVIEW_INTERVALS:
-        if str(interval) not in completed_list:
+        if str(interval) not in completed_before_or_on_view:
             next_interval = interval
             break 
             
@@ -159,14 +168,14 @@ for idx, row in st.session_state.df.iterrows():
             date_label = f"{start_date.month}/{start_date.day} 계획"
             interval_text = "최초"
         else:
-            base_date = row['initial_completion_date'] if pd.notna(row['initial_completion_date']) else start_date
+            base_date = pd.to_datetime(hist_dict.get('0', start_date)).date()
             target_date = base_date + timedelta(days=next_interval)
             date_label = f"{base_date.month}/{base_date.day} 완료"
             interval_text = f"{next_interval}일차"
             
         if target_date <= view_date:
-            if target_date < view_date:
-                days_late = (view_date - target_date).days
+            days_late = (view_date - target_date).days
+            if days_late > 0:
                 label = f"<span style='color:#ff4b4b;'>⚠️ {days_late}일 지연</span> ({date_label} • {interval_text})"
             else:
                 label = f"{date_label} • {interval_text}"
@@ -181,7 +190,12 @@ col1, col2 = st.columns([1.2, 0.8])
 
 with col1:
     if not todays_tasks:
-        st.write("🎉 오늘은 예정되거나 밀린 일정이 없습니다. 수고하셨어요!")
+        if view_date < real_today:
+            st.write("🎉 이 날은 예정되거나 밀린 일정이 없었습니다!")
+        elif view_date > real_today:
+            st.write("☕ 아직 이 날에 예정된 스케줄이 없습니다.")
+        else:
+            st.write("🎉 오늘은 예정되거나 밀린 일정이 없습니다. 수고하셨어요!")
         done_count = 1; total_count = 1
     else:
         total_count = len(todays_tasks)
@@ -200,7 +214,6 @@ with col1:
                     is_done = st.checkbox(f"{task['topic']}", key=f"task_{idx}_{task['interval']}")
                     st.markdown(f"<div style='font-family: \"Jua\", sans-serif; margin-top: -30px; margin-left: 30px; font-size: 15px; color: #666;'>{task['label']}</div>", unsafe_allow_html=True)
                     
-                    # 💡 [업데이트] 메모 입력창
                     memo_val = st.text_input("📝 한 줄 메모", value=task['memo'], key=f"memo_{idx}", placeholder="오늘 공부한 핵심 내용을 적어보세요!")
                     if memo_val != st.session_state.df.loc[idx, 'memo']:
                         st.session_state.df.loc[idx, 'memo'] = memo_val
@@ -208,12 +221,15 @@ with col1:
                     st.write("") 
                     
                     if is_done:
-                        current_completed = str(st.session_state.df.loc[idx, 'completed_intervals'])
-                        new_val = task['interval'] if current_completed in ('', 'nan') else f"{current_completed},{task['interval']}".strip(',')
-                        st.session_state.df.loc[idx, 'completed_intervals'] = new_val
-                        st.session_state.df.loc[idx, 'last_completed_date'] = view_date
-                        if task['interval'] == '0':
-                            st.session_state.df.loc[idx, 'initial_completion_date'] = view_date
+                        # 💡 체크 시 해당 회차에 '조회 중인 날짜(view_date)'를 도장 쾅! 찍음
+                        hist_str = str(st.session_state.df.loc[idx, 'history'])
+                        hist_dict = {k:v for k,v in [x.split(':') for x in hist_str.split(',') if ':' in x]}
+                        
+                        hist_dict[str(task['interval'])] = str(view_date)
+                        
+                        st.session_state.df.loc[idx, 'history'] = ",".join([f"{k}:{v}" for k,v in hist_dict.items()])
+                        st.session_state.df.loc[idx, 'completed_intervals'] = ",".join(hist_dict.keys())
+                        
                         save_data(st.session_state.df)
                         st.rerun()
                 else:
@@ -232,11 +248,49 @@ with col2:
                       annotations=[dict(text=f"{int((done_count/total_count)*100)}%", x=0.5, y=0.5, font_size=30, showarrow=False, font=dict(family='Jua, sans-serif', color='#444'))])
     st.plotly_chart(fig, use_container_width=True)
 
-# --- 하단 관리 메뉴 ---
+# --- 💡 데이터 관리 동기화 (완벽 연동) ---
 st.divider()
 with st.expander("📂 전체 데이터 관리"):
-    edited_df = st.data_editor(st.session_state.df, num_rows="dynamic", use_container_width=True)
+    st.info("💡 잘못 누르셨을 때는 여기서 '완료 기록' 숫자(예: 0,1 -> 0)를 직접 수정해 주세요!")
+    
+    # 불필요한 날짜 컬럼들을 숨기고 깔끔하게 정리
+    edited_df = st.data_editor(st.session_state.df, num_rows="dynamic", use_container_width=True,
+                               column_config={
+                                   "initial_completion_date": None,
+                                   "last_completed_date": None,
+                                   "history": None,
+                                   "subject": "과목", 
+                                   "topic": "학습 주제", 
+                                   "start_date": st.column_config.DateColumn("시작일(계획)", format="YYYY-MM-DD"),
+                                   "completed_intervals": "완료 기록",
+                                   "memo": "메모"
+                               })
     if st.button("수정사항 저장"):
+        for idx, row in edited_df.iterrows():
+            old_hist_dict = {k:v for k,v in [x.split(':') for x in str(row.get('history', '')).split(',') if ':' in x]}
+            
+            # 유저가 수정한 0,1 등의 숫자를 안전하게 추출
+            raw_comps = str(row.get('completed_intervals', '')).split(',')
+            new_comps = []
+            for x in raw_comps:
+                x = x.strip()
+                if x:
+                    try:
+                        new_comps.append(str(int(float(x))))
+                    except ValueError:
+                        pass
+            
+            # History 재구성 (지워진 숫자는 날리고, 새로 생긴 건 오늘 날짜 부여)
+            new_hist = {}
+            for comp in new_comps:
+                if comp in old_hist_dict:
+                    new_hist[comp] = old_hist_dict[comp]
+                else:
+                    new_hist[comp] = str(real_today)
+            
+            edited_df.at[idx, 'history'] = ",".join([f"{k}:{v}" for k,v in new_hist.items()])
+            edited_df.at[idx, 'completed_intervals'] = ",".join(new_hist.keys())
+            
         st.session_state.df = edited_df
         save_data(st.session_state.df)
         st.rerun()
