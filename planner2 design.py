@@ -6,7 +6,7 @@ import os
 import io
 from github import Github, UnknownObjectException
 
-# --- 💡 [핵심] 깃허브 동기화 설정 ---
+# --- 💡 깃허브 동기화 설정 ---
 GITHUB_TOKEN = st.secrets["GITHUB_TOKEN"]
 GITHUB_REPO = st.secrets["GITHUB_REPO"]
 DB_FILE = "study_data.csv"
@@ -24,9 +24,19 @@ def load_data():
         decoded_content = file_content.decoded_content.decode('utf-8')
         df = pd.read_csv(io.StringIO(decoded_content))
         
-        # 데이터 정제 및 타입 변환
+        # 날짜 타입 변환
         df['start_date'] = pd.to_datetime(df['start_date']).dt.date
         
+        # 💡 [버그 픽스] 컬럼이 없으면 만들고, Pandas가 숫자로 오해하지 못하도록 무조건 문자열(str)로 강제 변환!
+        if 'history' not in df.columns: df['history'] = ""
+        if 'memo' not in df.columns: df['memo'] = ""
+        if 'completed_intervals' not in df.columns: df['completed_intervals'] = ""
+        
+        df['history'] = df['history'].fillna("").astype(str).replace('nan', '')
+        df['memo'] = df['memo'].fillna("").astype(str).replace('nan', '')
+        df['completed_intervals'] = df['completed_intervals'].fillna("").astype(str).replace('nan', '')
+        
+        # 0.0 방지 청소기
         def clean_intervals(val):
             if pd.isna(val) or str(val).lower() == 'nan' or str(val).strip() == '':
                 return ''
@@ -39,15 +49,11 @@ def load_data():
             
         df['completed_intervals'] = df['completed_intervals'].apply(clean_intervals)
         
-        if 'history' not in df.columns: df['history'] = ""
-        if 'memo' not in df.columns: df['memo'] = ""
-        
-        df['memo'] = df['memo'].fillna("")
         return df
         
     except UnknownObjectException:
-        # 파일이 없으면 새 데이터프레임 생성
-        return pd.DataFrame(columns=['subject', 'topic', 'start_date', 'completed_intervals', 'history', 'memo'])
+        # 💡 [버그 픽스] 파일이 없어서 새로 만들 때도 모든 칸을 유연한 object 타입으로 지정
+        return pd.DataFrame(columns=['subject', 'topic', 'start_date', 'completed_intervals', 'history', 'memo']).astype(object)
 
 def save_data(df):
     repo = get_github_repo()
@@ -56,14 +62,14 @@ def save_data(df):
     content = csv_buffer.getvalue()
     
     try:
-        # 기존 파일 찾아서 업데이트
+        # 기존 파일 업데이트
         contents = repo.get_contents(DB_FILE)
         repo.update_file(contents.path, "Update study_data.csv (Auto-sync)", content, contents.sha)
     except UnknownObjectException:
-        # 파일이 없으면 새로 생성
+        # 새로 생성
         repo.create_file(DB_FILE, "Create study_data.csv (Initial)", content)
 
-# --- 이하 디자인 및 로직 (기존과 동일) ---
+# --- 디자인 및 로직 ---
 st.set_page_config(page_title="감성 기말고사 플래너", layout="wide")
 
 st.markdown("""
@@ -190,6 +196,32 @@ with col2:
 with st.expander("📂 전체 데이터 관리"):
     edited_df = st.data_editor(st.session_state.df, num_rows="dynamic", use_container_width=True, column_config={"initial_completion_date": None, "last_completed_date": None, "history": None})
     if st.button("수정사항 저장"):
+        # 💡 [버그 픽스] 데이터 에디터에서 수정한 내용을 저장할 때도 문자열 변환 적용
+        edited_df['history'] = edited_df['history'].fillna("").astype(str).replace('nan', '')
+        edited_df['completed_intervals'] = edited_df['completed_intervals'].fillna("").astype(str).replace('nan', '')
+        
+        for idx, row in edited_df.iterrows():
+            old_hist_dict = {k:v for k,v in [x.split(':') for x in str(row.get('history', '')).split(',') if ':' in x]}
+            raw_comps = str(row.get('completed_intervals', '')).split(',')
+            new_comps = []
+            for x in raw_comps:
+                x = x.strip()
+                if x:
+                    try:
+                        new_comps.append(str(int(float(x))))
+                    except ValueError: pass
+            
+            new_hist = {}
+            for comp in new_comps:
+                if comp in old_hist_dict:
+                    new_hist[comp] = old_hist_dict[comp]
+                else:
+                    new_hist[comp] = str(real_today)
+            
+            edited_df.loc[idx, 'history'] = ",".join([f"{k}:{v}" for k,v in new_hist.items()])
+            edited_df.loc[idx, 'completed_intervals'] = ",".join(new_hist.keys())
+            
         st.session_state.df = edited_df
-        save_data(edited_df)
+        save_data(st.session_state.df)
         st.rerun()
+
