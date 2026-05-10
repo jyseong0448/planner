@@ -12,11 +12,10 @@ GITHUB_TOKEN = st.secrets["GITHUB_TOKEN"]
 GITHUB_REPO = st.secrets["GITHUB_REPO"]
 DB_FILE = "study_data.csv"
 
-# 💡 [핵심] 컬럼 구조 재정비 (history 복구 및 planned_times 통합)
+# 컬럼 구조
 DB_COLUMNS = ['subject', 'topic', 'start_date', 'completed_intervals', 'history', 'memo', 'planned_times']
 REVIEW_INTERVALS = [0, 1, 3, 7, 15]
 
-# 과목별 하이라이터 색상 팔레트 (파스텔톤)
 COLOR_PALETTE = ["#ffb3ba", "#ffdfba", "#ffffba", "#baffc9", "#bae1ff", "#e8baff", "#ffbaff", "#e2f0cb", "#ffc4c4", "#c4faf8"]
 
 def get_github_repo():
@@ -29,14 +28,14 @@ def load_data():
         file_content = repo.get_contents(DB_FILE)
         decoded_content = file_content.decoded_content.decode('utf-8')
         df = pd.read_csv(io.StringIO(decoded_content))
-        df['start_date'] = pd.to_datetime(df['start_date']).dt.date
         
-        # 새 컬럼 및 빈칸 처리
+        # 💡 [버그 픽스] 날짜 변환 시 에러가 나면 빈칸 처리(coerce) 후 안전하게 date로 변경
+        df['start_date'] = pd.to_datetime(df['start_date'], errors='coerce').dt.date
+        
         for col in DB_COLUMNS:
             if col not in df.columns: df[col] = ""
             df[col] = df[col].fillna("").astype(str).replace('nan', '')
             
-        # 과거 데이터(start_time, duration)를 planned_times로 마이그레이션
         if 'start_time' in df.columns and 'duration' in df.columns:
             for idx, row in df.iterrows():
                 st_time = str(row.get('start_time', '')).strip()
@@ -49,7 +48,6 @@ def load_data():
                         df.at[idx, 'planned_times'] = f"{st_time}-{end_str}"
                     except: pass
                     
-        # 0.0 방지 청소기
         def clean_intervals(val):
             if not val: return ''
             cleaned = []
@@ -67,7 +65,6 @@ def load_data():
 def save_data(df):
     repo = get_github_repo()
     csv_buffer = io.StringIO()
-    # 💡 누락되는 데이터가 없도록 DB_COLUMNS 명시적 저장
     for col in DB_COLUMNS:
         if col not in df.columns: df[col] = ""
     df[DB_COLUMNS].to_csv(csv_buffer, index=False)
@@ -75,15 +72,13 @@ def save_data(df):
     
     try:
         contents = repo.get_contents(DB_FILE)
-        repo.update_file(contents.path, "Update study_data.csv (Timetable logic)", content, contents.sha)
+        repo.update_file(contents.path, "Update study_data.csv", content, contents.sha)
     except UnknownObjectException:
-        repo.create_file(DB_FILE, "Create study_data.csv (Initial)", content)
+        repo.create_file(DB_FILE, "Create study_data.csv", content)
 
-# 💡 [핵심] 사진 속 양식과 똑같은 버티컬 타임테이블 (오전 4시 ~ 익일 새벽 3시)
 def draw_vertical_timetable(df, view_date):
     filtered_df = df[(df['start_date'] == view_date) & (df['planned_times'] != "")].copy()
     
-    # 24시간 x 6칸(10분 단위) 그리드 생성
     grid = [["" for _ in range(6)] for _ in range(24)]
     total_minutes = 0
     subject_colors = {}
@@ -96,8 +91,6 @@ def draw_vertical_timetable(df, view_date):
             color_idx += 1
             
         times_str = row['planned_times']
-        
-        # "14:00-15:30, 20:00-21:00" 형태 파싱
         blocks = times_str.split(',')
         for block in blocks:
             try:
@@ -107,23 +100,19 @@ def draw_vertical_timetable(df, view_date):
                 
                 start_m = sh * 60 + sm
                 end_m = eh * 60 + em
-                if end_m <= start_m: end_m += 24 * 60 # 자정을 넘기는 경우
+                if end_m <= start_m: end_m += 24 * 60
                 
                 total_minutes += (end_m - start_m)
                 
-                # 1분 단위로 그리드에 색칠
                 for m in range(start_m, end_m):
-                    # 시작 기준 시간을 새벽 4시(240분)로 오프셋 조정
                     adj_m = m - 240
                     if adj_m < 0: adj_m += 24 * 60
                     if adj_m >= 24 * 60: continue
-                    
                     r = adj_m // 60
                     c = (adj_m % 60) // 10
                     grid[r][c] = subject_colors[sub]
-            except Exception: pass
+            except: pass
 
-    # HTML 테이블 생성
     html = f"""
     <div style="font-family: 'Jua', sans-serif; background-color: #fff; padding: 15px; border-radius: 8px; border: 1px solid #ddd; max-width: 350px; margin: 0 auto;">
         <div style="text-align: center; font-size: 18px; font-weight: bold; margin-bottom: 10px; letter-spacing: 2px;">TIMETABLE</div>
@@ -139,18 +128,14 @@ def draw_vertical_timetable(df, view_date):
             </tr>
     """
     
-    # 행(시간) 그리기 (4시부터 다음날 3시까지)
     hours_labels = list(range(4, 13)) + list(range(1, 13)) + list(range(1, 4))
     for r in range(24):
         html += f"<tr><td style='border-top: 1px solid #ccc; font-weight: bold; color: #333; padding: 3px 0;'>{hours_labels[r]}</td>"
         for c in range(6):
             bg_color = grid[r][c]
             html += f"<td style='border: 1px solid #ccc; border-right: none; height: 18px; background-color: {bg_color if bg_color else 'transparent'};'></td>"
-        # 마지막 열의 오른쪽 테두리 닫기
-        html = html[:-5] + " border-right: 1px solid #ccc;'></td>"
-        html += "</tr>"
+        html = html[:-5] + " border-right: 1px solid #ccc;'></td></tr>"
         
-    # TOTAL TIME 표시
     total_h = total_minutes // 60
     total_m = total_minutes % 60
     html += f"""
@@ -159,7 +144,6 @@ def draw_vertical_timetable(df, view_date):
         <div style="border: 1px solid #ccc; height: 40px; display: flex; align-items: center; justify-content: center; font-size: 20px; font-family: 'Courier New', monospace; font-weight: bold; color: #333;">
             {total_h}H {total_m:02d}M
         </div>
-        
         <div style="display: flex; flex-wrap: wrap; gap: 10px; margin-top: 15px; font-size: 12px;">
     """
     for sub, color in subject_colors.items():
@@ -168,7 +152,6 @@ def draw_vertical_timetable(df, view_date):
     html += "</div></div>"
     return html
 
-# --- 디자인 및 로직 ---
 st.set_page_config(page_title="감성 기말고사 플래너", layout="wide")
 
 st.markdown("""
@@ -188,7 +171,6 @@ if 'view_date' not in st.session_state: st.session_state.view_date = real_today
 def set_today(): st.session_state.view_date = real_today
 view_date = st.session_state.view_date
 
-# --- 사이드바 ---
 with st.sidebar:
     st.header("🗓️ 날짜 이동")
     st.date_input("조회할 날짜", key='view_date')
@@ -199,7 +181,6 @@ with st.sidebar:
         sub = st.text_input("과목명")
         top = st.text_input("학습 내용")
         date = st.date_input("학습 시작일", view_date)
-        # 💡 [업데이트] 계획 시간 입력 포맷 변경
         p_times = st.text_input("⏱️ 계획 시간", placeholder="예: 14:00-15:30, 20:00-21:00")
         submitted = st.form_submit_button("추가하기")
         if submitted and sub and top:
@@ -208,7 +189,6 @@ with st.sidebar:
             save_data(st.session_state.df)
             st.rerun()
 
-# --- 헤더 ---
 date_str = view_date.strftime("%Y.%m.%d %a").upper()
 exam_date = datetime(2026, 7, 1).date()
 d_day = (exam_date - view_date).days
@@ -221,14 +201,15 @@ header_html = f"""
 """
 st.markdown(header_html, unsafe_allow_html=True)
 
-# --- 메인 로직 ---
 todays_tasks = []
 for idx, row in st.session_state.df.iterrows():
-    start_date = row['start_date']
+    # 💡 [버그 픽스 핵심 부분] 문자열을 확실하게 날짜 객체로 변환!
+    start_ts = pd.to_datetime(row['start_date'], errors='coerce')
+    start_date = start_ts.date() if pd.notna(start_ts) else real_today
+    
     hist_str = str(row.get('history', ''))
     hist_dict = {k:v for k,v in [x.split(':') for x in hist_str.split(',') if ':' in x]}
     
-    # 완료 항목
     completed_on_view = [k for k, v in hist_dict.items() if str(pd.to_datetime(v).date()) == str(view_date)]
     for comp_int in completed_on_view:
         if comp_int == '0': label = f"{start_date.month}/{start_date.day} 계획 • 최초"
@@ -237,7 +218,6 @@ for idx, row in st.session_state.df.iterrows():
             label = f"{base_date.month}/{base_date.day} 완료 • {comp_int}일차"
         todays_tasks.append({'id': idx, 'subject': row['subject'], 'topic': row['topic'], 'interval': comp_int, 'label': label, 'status': 'complete', 'memo': row['memo'], 'planned_times': row['planned_times']})
 
-    # 미완료 항목
     completed_before_or_on_view = [k for k, v in hist_dict.items() if pd.to_datetime(v).date() <= view_date]
     next_interval = None
     for interval in REVIEW_INTERVALS:
@@ -272,7 +252,6 @@ with col1:
                     is_done = st.checkbox(f"{t['topic']}", key=f"t_{idx}_{t['interval']}")
                     st.markdown(f"<div style='font-family: \"Jua\", sans-serif; margin-top: -30px; margin-left: 30px; font-size: 15px; color: #666;'>{t['label']}</div>", unsafe_allow_html=True)
                     
-                    # 💡 시간 입력 (여러 개 입력 가능)
                     c1, c2 = st.columns([1.5, 2])
                     with c1:
                         p_time_input = st.text_input("⏱️ 계획 시간", value=t['planned_times'], key=f"pt_t_{idx}", placeholder="14:00-15:30, 20:00-21:00")
@@ -304,12 +283,9 @@ with col1:
 
 with col2:
     if 'total_count' in locals():
-        # 달성률 파이 차트
         fig = px.pie(values=[done_count, total_count-done_count], names=['완료', '미완료'], hole=0.6, color=['완료', '미완료'], color_discrete_map={'완료':'#8BC34A', '미완료':'#EEEEEE'})
         fig.update_layout(showlegend=False, margin=dict(t=0, b=0, l=0, r=0), paper_bgcolor='rgba(0,0,0,0)', height=250, annotations=[dict(text=f"{int((done_count/total_count)*100)}%", x=0.5, y=0.5, font_size=30, showarrow=False, font=dict(family='Jua'))])
         st.plotly_chart(fig, use_container_width=True)
-        
-        # 💡 [핵심] 버티컬 타임테이블 렌더링
         st.markdown(draw_vertical_timetable(st.session_state.df, view_date), unsafe_allow_html=True)
 
 with st.expander("📂 전체 데이터 관리"):
