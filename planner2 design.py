@@ -36,18 +36,6 @@ def load_data():
             if col not in df.columns: df[col] = ""
             df[col] = df[col].fillna("").astype(str).replace('nan', '')
             
-        if 'start_time' in df.columns and 'duration' in df.columns:
-            for idx, row in df.iterrows():
-                st_time = str(row.get('start_time', '')).strip()
-                dur = str(row.get('duration', '0')).strip()
-                if st_time and dur.isdigit() and int(dur) > 0 and not df.at[idx, 'planned_times']:
-                    try:
-                        h, m = map(int, st_time.split(':'))
-                        end_m = (h * 60 + m + int(dur))
-                        end_str = f"{end_m // 60 % 24:02d}:{end_m % 60:02d}"
-                        df.at[idx, 'planned_times'] = f"{st_time}-{end_str}"
-                    except: pass
-                    
         def clean_intervals(val):
             if not val: return ''
             cleaned = []
@@ -113,6 +101,7 @@ def draw_vertical_timetable(df, view_date):
                     grid[r][c] = subject_colors[sub]
             except: pass
 
+    # 💡 [버그 픽스] 60분 칸 깨진 글씨 제거
     html = f"""
     <div style="font-family: 'Jua', sans-serif; background-color: #fff; padding: 15px; border-radius: 8px; border: 1px solid #ddd; max-width: 350px; margin: 0 auto;">
         <div style="text-align: center; font-size: 18px; font-weight: bold; margin-bottom: 10px; letter-spacing: 2px;">TIMETABLE</div>
@@ -124,7 +113,7 @@ def draw_vertical_timetable(df, view_date):
                 <th style="border-left: 1px solid #eee; font-weight: normal; padding-bottom: 5px;">30</th>
                 <th style="border-left: 1px solid #eee; font-weight: normal; padding-bottom: 5px;">40</th>
                 <th style="border-left: 1px solid #eee; font-weight: normal; padding-bottom: 5px;">50</th>
-                <th style="border-left: 1px solid #eee; font-weight: normal; padding-bottom: 5px;">60</th>
+                <th style="border-left: 1px solid #eee; font-weight: normal; padding-bottom: 5px; border-right: 1px solid #ccc;">60</th>
             </tr>
     """
     
@@ -159,6 +148,9 @@ st.markdown("""
 @import url('https://fonts.googleapis.com/css2?family=Jua&display=swap');
 .stCheckbox label p { font-family: 'Jua', sans-serif !important; font-weight: 400 !important; font-size: 18px !important; color: #222 !important; }
 div[data-baseweb="input"] input { font-family: 'Jua', sans-serif !important; font-size: 15px !important; }
+/* 💡 시간 입력창 스타일 수정 */
+div[data-baseweb="input"] { font-size: 18px !important; }
+div[data-baseweb="input"] input { text-align: center !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -181,9 +173,23 @@ with st.sidebar:
         sub = st.text_input("과목명")
         top = st.text_input("학습 내용")
         date = st.date_input("학습 시작일", view_date)
-        p_times = st.text_input("⏱️ 계획 시간", placeholder="예: 14:00-15:30, 20:00-21:00")
+        
+        # 💡 [입력 방식 개편] 시각 다이얼 기반 입력
+        st.markdown("⏱️ 계획 시간 (시작 - 종료)")
+        c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
+        with c1:
+            st_h = st.number_input("시", value=9, min_value=0, max_value=23, key="st_h")
+        with c2:
+            st_m = st.number_input("분", value=0, min_value=0, max_value=59, step=10, key="st_m")
+        with c3:
+            en_h = st.number_input("시", value=10, min_value=0, max_value=23, key="en_h")
+        with c4:
+            en_m = st.number_input("분", value=0, min_value=0, max_value=59, step=10, key="en_m")
+            
         submitted = st.form_submit_button("추가하기")
         if submitted and sub and top:
+            # 💡 입력된 시/분을 형식에 맞춰 문자열로 변환
+            p_times = f"{st_h:02d}:{st_m:02d}-{en_h:02d}:{en_m:02d}"
             new_data = {'subject': sub, 'topic': top, 'start_date': date, 'completed_intervals': "", 'history': "", 'memo': "", 'planned_times': p_times}
             st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame([new_data])], ignore_index=True)
             save_data(st.session_state.df)
@@ -203,7 +209,7 @@ st.markdown(header_html, unsafe_allow_html=True)
 
 todays_tasks = []
 for idx, row in st.session_state.df.iterrows():
-    # 💡 [버그 픽스 핵심 부분] 문자열을 확실하게 날짜 객체로 변환!
+    # 💡 [버그 픽스] 문자열을 확실하게 날짜 객체로 변환!
     start_ts = pd.to_datetime(row['start_date'], errors='coerce')
     start_date = start_ts.date() if pd.notna(start_ts) else real_today
     
@@ -252,14 +258,32 @@ with col1:
                     is_done = st.checkbox(f"{t['topic']}", key=f"t_{idx}_{t['interval']}")
                     st.markdown(f"<div style='font-family: \"Jua\", sans-serif; margin-top: -30px; margin-left: 30px; font-size: 15px; color: #666;'>{t['label']}</div>", unsafe_allow_html=True)
                     
-                    c1, c2 = st.columns([1.5, 2])
+                    # 💡 [입력 방식 개편] Material Design 스타일 시간 입력
+                    st.markdown("⏱️ 계획 시간 (시작 - 종료)")
+                    c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
+                    
+                    # 💡 [디자인 연동] Hour 입력창 아래 시간 도장 배치
                     with c1:
-                        p_time_input = st.text_input("⏱️ 계획 시간", value=t['planned_times'], key=f"pt_t_{idx}", placeholder="14:00-15:30, 20:00-21:00")
+                        st_h_input = st.number_input("시", value=9, min_value=0, max_value=23, key=f"st_h_{idx}")
+                        st.markdown("<div style='text-align: center;'>🕒</div>", unsafe_allow_html=True)
+                    # 💡 [디자인 연동] Minute 입력창 아래 텍스트 필드 배치
                     with c2:
-                        memo_val = st.text_input("📝 메모", value=t['memo'], key=f"m_{idx}")
+                        st_m_input = st.number_input("분", value=0, min_value=0, max_value=59, step=10, key=f"st_m_{idx}")
+                        st.markdown("<div style='text-align: center; font-size: 12px; color: #aaa;'>Minute</div>", unsafe_allow_html=True)
+                    with c3:
+                        en_h_input = st.number_input("시", value=10, min_value=0, max_value=23, key=f"en_h_{idx}")
+                        st.markdown("<div style='text-align: center;'>🕒</div>", unsafe_allow_html=True)
+                    with c4:
+                        en_m_input = st.number_input("분", value=0, min_value=0, max_value=59, step=10, key=f"en_m_{idx}")
+                        st.markdown("<div style='text-align: center; font-size: 12px; color: #aaa;'>Minute</div>", unsafe_allow_html=True)
                         
-                    if p_time_input != st.session_state.df.at[idx, 'planned_times'] or memo_val != st.session_state.df.loc[idx, 'memo']:
-                        st.session_state.df.at[idx, 'planned_times'] = p_time_input
+                    # 💡 입력된 시/분을 형식에 맞춰 문자열로 변환
+                    p_times_input = f"{st_h_input:02d}:{st_m_input:02d}-{en_h_input:02d}:{en_m_input:02d}"
+                    
+                    memo_val = st.text_input("📝 메모", value=t['memo'], key=f"m_{idx}")
+                        
+                    if p_times_input != st.session_state.df.at[idx, 'planned_times'] or memo_val != st.session_state.df.loc[idx, 'memo']:
+                        st.session_state.df.at[idx, 'planned_times'] = p_times_input
                         st.session_state.df.loc[idx, 'memo'] = memo_val
                         save_data(st.session_state.df)
 
